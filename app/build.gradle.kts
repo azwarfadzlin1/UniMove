@@ -14,6 +14,9 @@ val localPropertiesFile = project.rootProject.file("local.properties")
 if (localPropertiesFile.exists()) {
     properties.load(FileInputStream(localPropertiesFile))
 }
+val releaseBuildRequested = gradle.startParameter.taskNames.any {
+    it.contains("release", ignoreCase = true) || it.contains("bundle", ignoreCase = true)
+}
 
 android {
     namespace = "com.example.unimove"
@@ -35,7 +38,12 @@ android {
 
         // Read API key from properties; throw error if not found
         val mapsKey = properties.getProperty("MAPS_API_KEY")
-            ?: error("MAPS_API_KEY is not set in local.properties. Please create the file and add the key.")
+            ?: System.getenv("MAPS_API_KEY")
+            ?: if (releaseBuildRequested) {
+                error("MAPS_API_KEY is required for release builds.")
+            } else {
+                "CI_PLACEHOLDER_NOT_FOR_RELEASE"
+            }
 
         // Pass to BuildConfig
         buildConfigField("String", "MAPS_API_KEY", "\"$mapsKey\"")
@@ -70,20 +78,29 @@ android {
     }
 
     // ✅ Release signing config (from local.properties)
+    val releaseStoreFile = properties.getProperty("RELEASE_STORE_FILE")
+    val releaseStorePassword = properties.getProperty("RELEASE_STORE_PASSWORD")
+    val releaseKeyAlias = properties.getProperty("RELEASE_KEY_ALIAS")
+    val releaseKeyPassword = properties.getProperty("RELEASE_KEY_PASSWORD")
+    val releaseSigningConfigured = listOf(
+        releaseStoreFile,
+        releaseStorePassword,
+        releaseKeyAlias,
+        releaseKeyPassword
+    ).all { !it.isNullOrBlank() }
+
+    if (releaseBuildRequested && !releaseSigningConfigured) {
+        error("Release signing credentials are required for release builds.")
+    }
+
     signingConfigs {
-        create("release") {
-            val storeFilePath = properties.getProperty("RELEASE_STORE_FILE")
-                ?: error("RELEASE_STORE_FILE is not set in local.properties")
-            storeFile = file(storeFilePath)
-
-            storePassword = properties.getProperty("RELEASE_STORE_PASSWORD")
-                ?: error("RELEASE_STORE_PASSWORD is not set in local.properties")
-
-            keyAlias = properties.getProperty("RELEASE_KEY_ALIAS")
-                ?: error("RELEASE_KEY_ALIAS is not set in local.properties")
-
-            keyPassword = properties.getProperty("RELEASE_KEY_PASSWORD")
-                ?: error("RELEASE_KEY_PASSWORD is not set in local.properties")
+        if (releaseSigningConfigured) {
+            create("release") {
+                storeFile = file(requireNotNull(releaseStoreFile))
+                storePassword = requireNotNull(releaseStorePassword)
+                keyAlias = requireNotNull(releaseKeyAlias)
+                keyPassword = requireNotNull(releaseKeyPassword)
+            }
         }
     }
 
@@ -91,7 +108,7 @@ android {
         release {
             isMinifyEnabled = false
             isShrinkResources = false
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.findByName("release")
 
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
