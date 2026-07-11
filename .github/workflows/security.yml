@@ -27,5 +27,7 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: gradle
+      - name: Create nonfunctional Firebase config for CI
+        run: cp app/google-services.example.json app/google-services.json
       - run: chmod +x gradlew
       - run: ./gradlew test lint --no-daemon
