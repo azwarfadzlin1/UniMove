@@ -1,0 +1,12 @@
+title = "UniMove secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Android preference constants are storage keys, not API credentials"
+condition = "AND"
+regexTarget = "line"
+targetRules = ["generic-api-key"]
+paths = ['''UniMove_Wearable/app/src/main/java/com/example/unimove_wearable/tracking/RunSummaryStore\.kt''']
+regexes = ['''private const val KEY_(PENDING_SUMMARIES|LAST_SUMMARY|LAST_CREATED_SESSION_ID)''']

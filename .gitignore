@@ -1,0 +1,50 @@
+# ========================
+# Android / Gradle
+# ========================
+*.iml
+.gradle
+/local.properties
+/build
+app/build/
+.externalNativeBuild
+.cxx
+/captures
+
+# ========================
+# IDE (Android Studio)
+# ========================
+.idea/
+.DS_Store
+
+# ========================
+# Logs & Debug files
+# ========================
+*.log
+*.txt
+
+# ========================
+# Security & Secrets
+# ========================
+app/google-services.json
+
+# ========================
+# Build outputs
+# ========================
+*.apk
+*.aab
+app/release/
+
+# ========================
+# OS files
+# ========================
+Thumbs.db
+
+# ========================
+# Node / Seed Scripts
+# ========================
+node_modules/
+npm-debug.log*
+package-lock.json
+
+
+*.codex/

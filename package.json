@@ -1,0 +1,11 @@
+{
+  "name": "unimove-demo-tools",
+  "private": true,
+  "scripts": {
+    "seed:demo": "node scripts/seed-demo.js",
+    "seed:demo:cleanup": "node scripts/seed-demo.js --cleanup"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.7.0"
+  }
+}

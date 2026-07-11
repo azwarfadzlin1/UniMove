@@ -1,0 +1,330 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role in ['admin', 'superadmin'];
+    }
+
+    function isSuperAdmin() {
+      return isAdmin()
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'superadmin';
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isVerifiedUser() {
+      return signedIn();
+    }
+
+    function isValidDevice() {
+      return signedIn();
+    }
+
+    function isValidModelAsset(assetPath) {
+      return assetPath is string
+        && assetPath.matches('^models/animal-[A-Za-z0-9_-]+\\.glb$');
+    }
+
+    function isValidLatLng(location) {
+      return location is map
+        && location.keys().hasAll(['lat', 'lng'])
+        && location.keys().hasOnly(['lat', 'lng'])
+        && location.lat is number
+        && location.lng is number
+        && location.lat >= -90
+        && location.lat <= 90
+        && location.lng >= -180
+        && location.lng <= 180;
+    }
+
+    function isValidMonsterSpawn(spawn) {
+      return spawn is map
+        && spawn.keys().hasAll(['id', 'name', 'lat', 'lng', 'visibleRadiusMeters', 'encounterRadiusMeters'])
+        && spawn.keys().hasOnly(['id', 'name', 'lat', 'lng', 'visibleRadiusMeters', 'encounterRadiusMeters'])
+        && spawn.id is string
+        && spawn.name is string
+        && spawn.lat is number
+        && spawn.lng is number
+        && spawn.lat >= -90
+        && spawn.lat <= 90
+        && spawn.lng >= -180
+        && spawn.lng <= 180
+        && spawn.visibleRadiusMeters is number
+        && spawn.visibleRadiusMeters >= 0
+        && spawn.encounterRadiusMeters is number
+        && spawn.encounterRadiusMeters >= 0;
+    }
+
+    function isValidMonsterEventSessionCreate() {
+      return request.resource.data.keys().hasAll([
+          'userId',
+          'userDisplayName',
+          'runName',
+          'isShared',
+          'distanceKm',
+          'durationSeconds',
+          'avgPace',
+          'timestamp',
+          'routePoints',
+          'sessionMode',
+          'eventType',
+          'monsterEncountered',
+          'monsterCaught',
+          'monsterModelAsset'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'userId',
+          'userDisplayName',
+          'runName',
+          'isShared',
+          'distanceKm',
+          'durationSeconds',
+          'avgPace',
+          'timestamp',
+          'routePoints',
+          'sessionMode',
+          'eventType',
+          'monsterEncountered',
+          'monsterCaught',
+          'monsterModelAsset',
+          'monsterSpawn'
+        ])
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.userDisplayName is string
+        && request.resource.data.runName == 'Monster Event Run'
+        && request.resource.data.isShared is bool
+        && request.resource.data.distanceKm is number
+        && request.resource.data.distanceKm >= 0
+        && request.resource.data.durationSeconds is number
+        && request.resource.data.durationSeconds >= 0
+        && request.resource.data.avgPace is string
+        && request.resource.data.timestamp is timestamp
+        && request.resource.data.routePoints is list
+        && request.resource.data.sessionMode == 'monster_event'
+        && request.resource.data.eventType == 'monster'
+        && request.resource.data.monsterEncountered is bool
+        && request.resource.data.monsterCaught is bool
+        && isValidModelAsset(request.resource.data.monsterModelAsset)
+        && (!('monsterSpawn' in request.resource.data.keys())
+          || isValidMonsterSpawn(request.resource.data.monsterSpawn));
+    }
+
+    function isValidMonsterEventCatchWrite(catchId) {
+      return request.resource.data.keys().hasAll([
+          'userId',
+          'userDisplayName',
+          'creatureId',
+          'creatureName',
+          'modelAsset',
+          'caughtAt',
+          'source',
+          'caughtLocation'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'userId',
+          'userDisplayName',
+          'creatureId',
+          'creatureName',
+          'modelAsset',
+          'caughtAt',
+          'isPublic',
+          'source',
+          'caughtLocation',
+          'distanceAtCatchMeters'
+        ])
+        && request.resource.data.userId == request.auth.uid
+        && catchId == request.auth.uid + '_' + request.resource.data.creatureId
+        && request.resource.data.userDisplayName is string
+        && request.resource.data.creatureId is string
+        && request.resource.data.creatureName is string
+        && isValidModelAsset(request.resource.data.modelAsset)
+        && request.resource.data.caughtAt is timestamp
+        && (!('isPublic' in request.resource.data.keys())
+          || request.resource.data.isPublic is bool)
+        && request.resource.data.source == 'monster_event'
+        && isValidLatLng(request.resource.data.caughtLocation)
+        && (!('distanceAtCatchMeters' in request.resource.data.keys())
+          || (request.resource.data.distanceAtCatchMeters is number
+            && request.resource.data.distanceAtCatchMeters >= 0));
+    }
+
+    match /admins/{adminId} {
+      allow get: if (signedIn() && request.auth.uid == adminId) || isSuperAdmin();
+      allow list: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if (isOwner(userId) || isAdmin()) && isValidDevice();
+      allow create: if signedIn() && request.auth.uid == userId;
+      allow update: if isOwner(userId) && isValidDevice();
+      allow delete: if isSuperAdmin();
+
+      match /sessions/{sessionId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidDevice();
+        allow update: if false;
+        allow delete: if isAdmin();
+      }
+
+      match /challenge_progress/{challengeId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId) && isValidDevice();
+        allow delete: if isAdmin();
+      }
+
+      match /meal_logs/{dateKey} {
+        allow read, write: if isOwner(userId) && isValidDevice();
+
+        match /entries/{entryId} {
+          allow read, write: if isOwner(userId) && isValidDevice();
+        }
+      }
+
+      match /metadata/{metadataId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if isOwner(userId) && isValidDevice();
+      }
+
+      match /fitbot_conversations/{conversationId} {
+        allow read, write: if isOwner(userId) && isValidDevice();
+      }
+
+      match /monster_collection/{creatureId} {
+        // This collection is already scoped beneath the authenticated user's
+        // document. Owner checks are sufficient and avoid rejecting valid SDK
+        // payloads because of optional-field or numeric-type validation.
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId)
+          && request.resource.data.userId == userId
+          && request.resource.data.creatureId == creatureId;
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    match /run_sessions/{sessionId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /sessions/{sessionId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /{path=**}/sessions/{sessionId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+    }
+
+    match /challenge_progress/{progressId} {
+      allow read: if isVerifiedUser();
+      allow write: if false;
+    }
+
+    match /{path=**}/challenge_progress/{progressId} {
+      allow read: if isVerifiedUser();
+    }
+
+    match /participants/{participantId} {
+      allow read: if isVerifiedUser();
+      allow write: if false;
+    }
+
+    match /{path=**}/participants/{participantId} {
+      allow read: if isVerifiedUser();
+    }
+
+    match /community_feed/{postId} {
+      allow read: if isVerifiedUser();
+      allow create: if isVerifiedUser()
+        && isValidDevice()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.likes == 0
+        && request.resource.data.likedBy is list
+        && request.resource.data.likedBy.size() == 0;
+      allow update: if isVerifiedUser()
+        && isValidDevice()
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'likedBy'])
+        && request.resource.data.likedBy is list
+        && request.resource.data.likes == request.resource.data.likedBy.size();
+      allow delete: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+    }
+
+    match /weekly_leaderboard/{entryId} {
+      allow read: if isVerifiedUser();
+      allow create, update: if isVerifiedUser()
+        && isValidDevice()
+        && request.resource.data.userId == request.auth.uid
+        && entryId.matches('^' + request.auth.uid + '_[0-9]{4}-W[0-9]{2}$');
+      allow delete: if isAdmin();
+    }
+
+    match /monster_event_sessions/{sessionId} {
+      allow read: if isVerifiedUser() && resource.data.userId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidDevice()
+        && isValidMonsterEventSessionCreate();
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /monster_event_catches/{catchId} {
+      allow read: if isVerifiedUser()
+        && (resource.data.userId == request.auth.uid || resource.data.isPublic == true);
+      allow create: if isVerifiedUser()
+        && isValidDevice()
+        && isValidMonsterEventCatchWrite(catchId);
+      allow update: if isVerifiedUser()
+        && isValidDevice()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.creatureId == resource.data.creatureId
+        && isValidMonsterEventCatchWrite(catchId);
+      allow delete: if isAdmin();
+    }
+
+    match /challenges/{challengeId} {
+      allow read: if isVerifiedUser();
+      allow create, update, delete: if isAdmin();
+
+      match /participants/{userId} {
+        allow read: if isVerifiedUser();
+        allow create, update: if isOwner(userId) && isValidDevice();
+        allow delete: if isAdmin();
+      }
+    }
+
+    match /settings/{settingId} {
+      allow read: if isVerifiedUser();
+      allow write: if isAdmin();
+    }
+
+    match /admin_logs/{logId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if isSuperAdmin();
+    }
+
+    match /analytics/{docId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /device_tokens/{tokenId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
