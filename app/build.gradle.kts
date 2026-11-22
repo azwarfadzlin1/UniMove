@@ -73,7 +73,9 @@ android {
         buildConfigField("String", "USDA_FDC_API_BASE_URL", "\"$usdaFdcApiBaseUrl\"")
 
         // Groq API Key
-        val groqKey = properties.getProperty("GROQ_API_KEY") ?: ""
+        val groqKey = properties.getProperty("GROQ_API_KEY")
+            ?: properties.getProperty("GROQ_API_KEY_PROD")
+            ?: ""
         buildConfigField("String", "GROQ_API_KEY", "\"$groqKey\"")
     }
 

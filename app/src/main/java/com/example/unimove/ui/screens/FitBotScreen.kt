@@ -30,9 +30,15 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -408,7 +414,7 @@ private fun FitBotTopBar(onBack: () -> Unit, onMenuClick: () -> Unit) {
     }
 }
 
-// ─── Chat Bubble ─────────────────────────────────────────────────────────────
+// ─── Chat Bubble & Formatting ───────────────────────────────────────────────
 
 @Composable
 private fun ChatBubble(message: ChatMessage) {
@@ -428,7 +434,7 @@ private fun ChatBubble(message: ChatMessage) {
             Spacer(Modifier.width(8.dp))
         }
         Box(
-            modifier = Modifier.widthIn(max = 280.dp)
+            modifier = Modifier.widthIn(max = if (message.isUser) 280.dp else 320.dp)
                 .shadow(if (message.isUser) 4.dp else 2.dp, bubbleShape(message.isUser))
                 .clip(bubbleShape(message.isUser))
                 .background(if (message.isUser) Brush.linearGradient(listOf(Color(0xFF1A2E5E), Color(0xFF1A56DB))) else Brush.linearGradient(listOf(CardSurface, CardSurface)))
@@ -438,15 +444,226 @@ private fun ChatBubble(message: ChatMessage) {
             if (message.isStreaming && message.text.isEmpty()) {
                 TypingIndicator()
             } else {
-                Text(
-                    text = message.text,
-                    color = when { message.isUser -> Color.White; message.isError -> Color(0xFFEF4444); else -> TextPrimary },
-                    fontSize = 14.sp, lineHeight = 20.sp,
-                    fontWeight = if (message.isUser) FontWeight.Medium else FontWeight.Normal
-                )
+                FormattedChatMessage(message = message)
             }
         }
         if (message.isUser) Spacer(Modifier.width(8.dp))
+    }
+}
+
+@Composable
+private fun FormattedChatMessage(message: ChatMessage) {
+    if (message.isUser || message.isError) {
+        Text(
+            text = message.text,
+            color = when { message.isUser -> Color.White; message.isError -> Color(0xFFEF4444); else -> TextPrimary },
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
+            fontWeight = if (message.isUser) FontWeight.Medium else FontWeight.Normal
+        )
+        return
+    }
+
+    val blocks = remember(message.text) { parseMarkdownBlocks(message.text) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        blocks.forEach { block ->
+            when (block) {
+                is MarkdownBlock.Header -> {
+                    val fontSize = when (block.level) {
+                        1 -> 16.sp
+                        2 -> 15.5.sp
+                        else -> 15.sp
+                    }
+                    Text(
+                        text = parseMarkdownInline(block.text, textColor = TextPrimary, boldColor = Color(0xFF1A56DB)),
+                        fontSize = fontSize,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary,
+                        lineHeight = 22.sp,
+                        modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                    )
+                }
+                is MarkdownBlock.BulletItem -> {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.Top,
+                        modifier = Modifier.padding(start = 2.dp)
+                    ) {
+                        Text(
+                            text = "•",
+                            color = AccentBlue,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = parseMarkdownInline(block.text, textColor = TextPrimary, boldColor = TextPrimary),
+                            fontSize = 14.sp,
+                            lineHeight = 20.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                is MarkdownBlock.NumberedItem -> {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.Top,
+                        modifier = Modifier.padding(start = 2.dp)
+                    ) {
+                        Text(
+                            text = "${block.number}.",
+                            color = AccentBlue,
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.widthIn(min = 18.dp)
+                        )
+                        Text(
+                            text = parseMarkdownInline(block.text, textColor = TextPrimary, boldColor = TextPrimary),
+                            fontSize = 14.sp,
+                            lineHeight = 20.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                is MarkdownBlock.Callout -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(AccentBlueSoft.copy(alpha = 0.6f))
+                            .border(1.dp, AccentBlue.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            text = parseMarkdownInline(block.text, textColor = TextPrimary, boldColor = AccentBlue),
+                            fontSize = 13.5.sp,
+                            lineHeight = 19.sp
+                        )
+                    }
+                }
+                is MarkdownBlock.Paragraph -> {
+                    Text(
+                        text = parseMarkdownInline(block.text, textColor = TextPrimary, boldColor = TextPrimary),
+                        fontSize = 14.sp,
+                        lineHeight = 20.5.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+private sealed interface MarkdownBlock {
+    data class Header(val text: String, val level: Int) : MarkdownBlock
+    data class BulletItem(val text: String) : MarkdownBlock
+    data class NumberedItem(val number: String, val text: String) : MarkdownBlock
+    data class Callout(val text: String) : MarkdownBlock
+    data class Paragraph(val text: String) : MarkdownBlock
+}
+
+private fun parseMarkdownBlocks(rawText: String): List<MarkdownBlock> {
+    if (rawText.isBlank()) return emptyList()
+
+    val lines = rawText.lines()
+    val blocks = mutableListOf<MarkdownBlock>()
+    val currentParagraphLines = mutableListOf<String>()
+
+    fun flushParagraph() {
+        if (currentParagraphLines.isNotEmpty()) {
+            val combined = currentParagraphLines.joinToString("\n").trim()
+            if (combined.isNotBlank()) {
+                blocks.add(MarkdownBlock.Paragraph(combined))
+            }
+            currentParagraphLines.clear()
+        }
+    }
+
+    for (line in lines) {
+        val trimmed = line.trim()
+        if (trimmed.isEmpty()) {
+            flushParagraph()
+            continue
+        }
+
+        when {
+            trimmed.startsWith("#") -> {
+                flushParagraph()
+                val level = trimmed.takeWhile { it == '#' }.length
+                val headerText = trimmed.dropWhile { it == '#' || it == ' ' }.trim()
+                blocks.add(MarkdownBlock.Header(headerText, level))
+            }
+            trimmed.startsWith("- ") || trimmed.startsWith("* ") || trimmed.startsWith("• ") -> {
+                flushParagraph()
+                val itemText = trimmed.substring(2).trim()
+                blocks.add(MarkdownBlock.BulletItem(itemText))
+            }
+            trimmed.matches(Regex("^\\d+\\.\\s+.*")) -> {
+                flushParagraph()
+                val dotIndex = trimmed.indexOf('.')
+                val number = trimmed.substring(0, dotIndex).trim()
+                val itemText = trimmed.substring(dotIndex + 1).trim()
+                blocks.add(MarkdownBlock.NumberedItem(number, itemText))
+            }
+            trimmed.startsWith("> ") -> {
+                flushParagraph()
+                val quoteText = trimmed.substring(2).trim()
+                blocks.add(MarkdownBlock.Callout(quoteText))
+            }
+            else -> {
+                currentParagraphLines.add(line)
+            }
+        }
+    }
+    flushParagraph()
+    return blocks
+}
+
+private fun parseMarkdownInline(
+    text: String,
+    textColor: Color,
+    boldColor: Color = textColor
+): AnnotatedString {
+    return buildAnnotatedString {
+        val pattern = Regex("(\\*\\*|\\*|`)(.*?)\\1")
+        var lastIndex = 0
+
+        for (match in pattern.findAll(text)) {
+            val range = match.range
+            if (range.first > lastIndex) {
+                append(text.substring(lastIndex, range.first))
+            }
+            val delimiter = match.groupValues[1]
+            val content = match.groupValues[2]
+
+            when (delimiter) {
+                "**" -> {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = boldColor)) {
+                        append(content)
+                    }
+                }
+                "*" -> {
+                    withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
+                        append(content)
+                    }
+                }
+                "`" -> {
+                    withStyle(
+                        SpanStyle(
+                            fontFamily = FontFamily.Monospace,
+                            background = Color.Black.copy(alpha = 0.07f),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    ) {
+                        append(" $content ")
+                    }
+                }
+            }
+            lastIndex = range.last + 1
+        }
+
+        if (lastIndex < text.length) {
+            append(text.substring(lastIndex))
+        }
     }
 }
 

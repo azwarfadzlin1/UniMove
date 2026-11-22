@@ -29,7 +29,20 @@ data class GroqChatResponse(
     val choices: List<GroqChoice>
 )
 
+data class GroqModelItem(
+    val id: String
+)
+
+data class GroqModelsResponse(
+    val data: List<GroqModelItem>?
+)
+
 interface GroqApi {
+    @retrofit2.http.GET("openai/v1/models")
+    suspend fun getModels(
+        @Header("Authorization") authHeader: String
+    ): GroqModelsResponse
+
     @POST("openai/v1/chat/completions")
     suspend fun createChatCompletion(
         @Header("Authorization") authHeader: String,

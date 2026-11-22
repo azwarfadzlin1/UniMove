@@ -320,6 +320,24 @@ class FitBotViewModel : ViewModel() {
 
         viewModelScope.launch {
             try {
+                val apiKey = BuildConfig.GROQ_API_KEY.trim()
+                val maskedKey = if (apiKey.length > 10) "${apiKey.take(7)}...${apiKey.takeLast(4)}" else apiKey
+                Log.d(TAG, "Using Groq API Key: $maskedKey (length=${apiKey.length})")
+                if (apiKey.isBlank()) {
+                    _uiState.update { state ->
+                        val msgs = state.messages.toMutableList()
+                        val idx = msgs.indexOfLast { it.isStreaming }
+                        if (idx >= 0) msgs[idx] = msgs[idx].copy(
+                            text = "⚠️ Groq API key is missing. Please check GROQ_API_KEY in local.properties.",
+                            isStreaming = false,
+                            isError = true
+                        )
+                        state.copy(messages = msgs, isLoading = false)
+                    }
+                    saveCurrentConversation()
+                    return@launch
+                }
+
                 // 1. Filter out errors and the placeholder streaming message
                 val allMessages = _uiState.value.messages.filter { !it.isError && !it.isStreaming && it.text.isNotBlank() }
                 
@@ -334,20 +352,96 @@ class FitBotViewModel : ViewModel() {
                     val role = if (msg.isUser) "user" else "assistant"
                     requestMessages.add(GroqMessage(role = role, content = msg.text))
                 }
-                
-                val request = GroqChatRequest(messages = requestMessages)
-                val response = groqApi.createChatCompletion("Bearer ${BuildConfig.GROQ_API_KEY}", request)
-                val responseText = response.choices.firstOrNull()?.message?.content ?: "No response. Please try again."
+
+                // Query available models for this API key to avoid hardcoding dead model names
+                val availableModels = runCatching {
+                    groqApi.getModels("Bearer $apiKey").data?.map { it.id }.orEmpty()
+                }.onFailure { Log.e(TAG, "Failed to query Groq models: ${it.message}") }.getOrNull().orEmpty()
+                Log.d(TAG, "Available Groq models for key: $availableModels")
+
+                val preferredModels = listOf(
+                    "llama-3.3-70b-versatile",
+                    "llama-3.1-8b-instant",
+                    "llama-3.2-3b-preview",
+                    "llama-3.2-1b-preview",
+                    "llama3-70b-8192",
+                    "llama3-8b-8192",
+                    "mixtral-8x7b-32768",
+                    "gemma2-9b-it",
+                    "openai/gpt-oss-120b",
+                    "openai/gpt-oss-20b",
+                    "qwen/qwen3.8-27b",
+                    "allam-2-7b"
+                )
+
+                val candidateModels = mutableListOf<String>()
+
+                // 1. Add preferred models if available in account
+                for (model in preferredModels) {
+                    if (availableModels.contains(model)) {
+                        candidateModels.add(model)
+                    }
+                }
+
+                // 2. Add any other available models that look like chat LLMs (filtering out audio/guard/specialized)
+                val nonChatKeywords = listOf("whisper", "guard", "orpheus", "safeguard", "embed", "tts", "stt")
+                availableModels.filter { id ->
+                    nonChatKeywords.none { id.contains(it, ignoreCase = true) }
+                }.forEach { model ->
+                    if (!candidateModels.contains(model)) {
+                        candidateModels.add(model)
+                    }
+                }
+
+                // 3. Fallbacks in case model discovery was empty or returned nothing
+                val defaultFallbacks = listOf("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-120b")
+                for (fb in defaultFallbacks) {
+                    if (!candidateModels.contains(fb)) {
+                        candidateModels.add(fb)
+                    }
+                }
+
+                Log.d(TAG, "Candidate Groq models in priority order: $candidateModels")
+
+                var responseText: String? = null
+                var lastException: Exception? = null
+
+                for (model in candidateModels) {
+                    try {
+                        Log.d(TAG, "Attempting Groq chat completion with model: $model")
+                        val request = GroqChatRequest(model = model, messages = requestMessages)
+                        val response = groqApi.createChatCompletion("Bearer $apiKey", request)
+                        responseText = response.choices.firstOrNull()?.message?.content ?: "No response. Please try again."
+                        Log.d(TAG, "Groq chat completion succeeded with model: $model")
+                        break
+                    } catch (e: retrofit2.HttpException) {
+                        lastException = e
+                        val code = e.code()
+                        val body = runCatching { e.response()?.errorBody()?.string() }.getOrNull().orEmpty()
+                        Log.e(TAG, "Groq HTTP $code for model '$model': $body")
+                        if (code == 400 || code == 404 || body.contains("model_terms_required", ignoreCase = true) || body.contains("model_not_found", ignoreCase = true)) {
+                            Log.w(TAG, "Model '$model' failed with HTTP $code, trying next candidate model...")
+                            continue
+                        } else {
+                            throw e
+                        }
+                    } catch (e: Exception) {
+                        lastException = e
+                        throw e
+                    }
+                }
+
+                val finalResponseText = responseText ?: throw (lastException ?: Exception("No available Groq models responded."))
 
                 _uiState.update { state ->
                     val msgs = state.messages.toMutableList()
                     val idx = msgs.indexOfLast { it.isStreaming }
-                    if (idx >= 0) msgs[idx] = msgs[idx].copy(text = responseText, isStreaming = false)
+                    if (idx >= 0) msgs[idx] = msgs[idx].copy(text = finalResponseText, isStreaming = false)
                     state.copy(messages = msgs, isLoading = false)
                 }
                 saveCurrentConversation()
             } catch (e: Exception) {
-                Log.e(TAG, "sendMessage error: ${e.javaClass.simpleName}: ${e.message}")
+                Log.e(TAG, "sendMessage error: ${e.javaClass.simpleName}: ${e.message}", e)
                 _uiState.update { state ->
                     val msgs = state.messages.toMutableList()
                     val idx = msgs.indexOfLast { it.isStreaming }
@@ -359,16 +453,40 @@ class FitBotViewModel : ViewModel() {
         }
     }
 
-    private fun friendlyError(e: Exception): String = when {
-        e.message?.contains("API_KEY_INVALID", true) == true ||
-                e.message?.contains("API key not valid", true) == true ||
-                e.message?.contains("HTTP 401", true) == true -> "⚠️ API key is invalid."
-        e.message?.contains("network", true) == true ||
-                e.message?.contains("Unable to resolve", true) == true -> "⚠️ No internet connection."
-        e.message?.contains("HTTP 403", true) == true -> "⚠️ API access denied."
-        e.message?.contains("HTTP 429", true) == true -> "⚠️ Rate limited. Try again shortly!"
-        e.message?.contains("HTTP 404", true) == true -> "⚠️ Model not found. Check API key access."
-        else -> "⚠️ ${e.javaClass.simpleName}: ${e.message?.take(100) ?: "Unknown error"}"
+    private fun friendlyError(e: Exception): String = when (e) {
+        is retrofit2.HttpException -> {
+            val code = e.code()
+            val body = runCatching { e.response()?.errorBody()?.string() }.getOrNull().orEmpty()
+            Log.e(TAG, "Groq HTTP $code response body: $body")
+
+            val jsonMsg = runCatching {
+                com.google.gson.JsonParser.parseString(body)
+                    .asJsonObject.getAsJsonObject("error")
+                    .get("message").asString
+            }.getOrNull()
+
+            when {
+                code == 401 || body.contains("invalid_api_key", ignoreCase = true) || body.contains("API key", ignoreCase = true) ->
+                    "⚠️ Groq API key is invalid or unauthorized (HTTP 401)."
+                code == 404 || body.contains("model_not_found", ignoreCase = true) ->
+                    "⚠️ FitBot model not found. Check API key model access (HTTP 404)."
+                code == 400 && body.contains("model_terms_required", ignoreCase = true) ->
+                    "⚠️ Selected Groq model requires accepting terms in Groq console."
+                code == 429 ->
+                    "⚠️ Rate limit exceeded. Please try again in a moment (HTTP 429)."
+                code == 403 ->
+                    "⚠️ Access denied to Groq API (HTTP 403)."
+                !jsonMsg.isNullOrBlank() ->
+                    "⚠️ Groq API error: $jsonMsg"
+                else ->
+                    "⚠️ Groq API error (HTTP $code)."
+            }
+        }
+        else -> when {
+            e.message?.contains("network", true) == true ||
+                    e.message?.contains("Unable to resolve", true) == true -> "⚠️ No internet connection."
+            else -> "⚠️ ${e.javaClass.simpleName}: ${e.message?.take(100) ?: "Unknown error"}"
+        }
     }
 
     private fun historyErrorMessage(error: Exception, action: String): String {
@@ -406,12 +524,22 @@ class FitBotViewModel : ViewModel() {
             if (totalDistanceKm > 0.01) appendLine("- Total distance run: ${String.format("%.1f", totalDistanceKm)}km")
             if (dailyCalorieTarget != null) appendLine("- Daily calorie target: ${dailyCalorieTarget}kcal")
         }.trim().ifBlank { "- Profile not set up" }
-        return "You are FitBot, an AI assistant in UniMove (a university fitness app). " +
-                "User profile: $profile. " +
-                "You are friendly, concise, and knowledgeable. For fitness questions, give personalized, evidence-based coaching using the profile above. " +
-                "For any other topic, answer helpfully like a general AI assistant. " +
-                "Keep replies under 150 words unless a detailed plan is explicitly requested. " +
-                "Never give medical diagnoses — recommend a doctor for health issues."
+
+        return """
+            You are FitBot, an expert AI fitness and wellness assistant in the UniMove app.
+
+            User Profile:
+            $profile
+
+            Response Formatting & Presentation Guidelines:
+            - Format all responses using clean, structured Markdown for maximum readability.
+            - Use bold text (**bold**) for key metrics, core concepts, and emphasis.
+            - Use clear headers (e.g. ### Header or **Section Title:**) to organize advice into distinct sections.
+            - Use bullet points (`•` or `-`) or numbered lists for steps, workout routines, tips, and key options.
+            - Include appropriate emojis (e.g., 🏃‍♂️, 🥗, 💪, 💡, ⏱️, 🎯) to make responses friendly and visually engaging.
+            - Keep answers concise, direct, and actionable.
+            - Never provide medical diagnoses — advise consulting a physician for health or medical concerns.
+        """.trimIndent()
     }
 
     override fun onCleared() {
